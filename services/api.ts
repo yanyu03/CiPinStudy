@@ -1,4 +1,4 @@
-import { DashboardData, AIReport, ConfigStatus, APIConfig, ModelValidationResponse, PersonaId, BasicData, Article, WordStat } from '../types';
+import { DashboardData, AIReport, ConfigStatus, APIConfig, ModelValidationResponse, PersonaId, Article, WordStat, FormattedCollection } from '../types';
 
 const LS_CONFIG_KEY = 'xinhua_insight_api_config';
 const LS_DATA_KEY = 'xinhua_insight_local_data';
@@ -33,6 +33,78 @@ const saveStoredData = (data: DashboardData) => {
 // --- Helper for Dates ---
 const getTodayDate = () => {
   return new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+};
+
+const normalizeWhitespace = (value: string): string => {
+  return value.replace(/\s+/g, ' ').trim();
+};
+
+const normalizeTitle = (title: string): string => {
+  return normalizeWhitespace(
+    title
+      .replace(/^【[^】]+】/g, '')
+      .replace(/^\[[^\]]+\]/g, '')
+      .replace(/^\([^\)]+\)/g, '')
+  );
+};
+
+const canonicalizeUrl = (href: string): string => {
+  const url = new URL(href, TARGET_URL);
+  url.hash = '';
+  ['utm_source', 'utm_medium', 'utm_campaign', 'from'].forEach((key) => {
+    url.searchParams.delete(key);
+  });
+  return url.toString();
+};
+
+const extractDateFromUrl = (url: string): string | null => {
+  const candidates = [
+    /\/(\d{4})(\d{2})(\d{2})\//,
+    /\/(\d{4})\/(\d{2})(\d{2})\//,
+    /\/(\d{4})-(\d{2})\/(\d{2})\//
+  ];
+
+  for (const pattern of candidates) {
+    const dateMatch = url.match(pattern);
+    if (dateMatch) {
+      return `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+    }
+  }
+  return null;
+};
+
+const isWithinHours = (date: string, limitHours?: number): boolean => {
+  if (!limitHours) return true;
+  const dateTime = new Date(`${date}T00:00:00+08:00`).getTime();
+  const now = Date.now();
+  const diffHours = (now - dateTime) / (1000 * 60 * 60);
+  return diffHours <= limitHours;
+};
+
+const formatCollectionAsMarkdown = (data: DashboardData): string => {
+  const lines: string[] = [];
+  lines.push(`# Xinhua Insight Collection (${data.stats?.date ?? getTodayDate()})`);
+  lines.push('');
+  lines.push(`- Total Articles: ${data.stats?.total_articles ?? data.articles.length}`);
+  lines.push(`- Last Updated: ${data.stats?.last_updated ?? new Date().toLocaleTimeString()}`);
+  lines.push(`- Cleaned At: ${data.cleaned_at ?? new Date().toISOString()}`);
+  lines.push('');
+  lines.push('## Top Keywords');
+  lines.push('');
+
+  (data.stats?.top_keywords ?? []).forEach((kw) => {
+    lines.push(`- ${kw.word}: ${kw.count}`);
+  });
+
+  lines.push('');
+  lines.push('## Articles');
+  lines.push('');
+
+  data.articles.forEach((article, index) => {
+    lines.push(`${index + 1}. [${article.title}](${article.url}) (${article.date})`);
+  });
+
+  return lines.join('\n');
 };
 
 // --- Client-Side Analysis Helpers ---
@@ -192,29 +264,22 @@ export const api = {
       const today = getTodayDate();
 
       linkElements.forEach((el) => {
-         const title = el.textContent?.trim();
+         const title = normalizeTitle(el.textContent || '');
          const href = el.getAttribute('href');
          
          if (title && title.length > 6 && href && !href.includes('javascript:')) {
              let fullUrl = href;
-             if (!href.startsWith('http')) {
-                 try {
-                     fullUrl = new URL(href, TARGET_URL).href;
-                 } catch (e) {
-                     return;
-                 }
+             try {
+               fullUrl = canonicalizeUrl(href);
+             } catch (e) {
+               return;
              }
 
              // Attempt to extract date from URL 
-             let date = today; // Default to today if finding date fails
-             
-             let dateMatch = fullUrl.match(/\/(\d{4})(\d{2})(\d{2})\//);
-             if (!dateMatch) {
-                dateMatch = fullUrl.match(/\/(\d{4})\/(\d{2})(\d{2})\//);
-             }
+             const date = extractDateFromUrl(fullUrl) ?? today;
 
-             if (dateMatch) {
-                 date = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+             if (!isWithinHours(date, params?.limit_hours)) {
+              return;
              }
 
              extractedArticles.push({
@@ -225,7 +290,7 @@ export const api = {
          }
       });
 
-      const uniqueArticles = Array.from(new Map(extractedArticles.map(item => [item.title, item])).values());
+      const uniqueArticles = Array.from(new Map(extractedArticles.map(item => [`${item.title}-${item.url}`, item])).values());
       
       if (uniqueArticles.length === 0) {
           throw new Error("No articles found in parsed HTML");
@@ -243,8 +308,12 @@ export const api = {
               last_updated: new Date().toLocaleTimeString(),
               top_keywords: topKeywords
           },
-          articles: uniqueArticles.slice(0, 50) 
+          articles: uniqueArticles.slice(0, 50),
+          cleaned_at: new Date().toISOString(),
+          collection_notes: 'Normalized title/url/date and filtered by optional hour window.'
       };
+
+      newData.markdown_digest = formatCollectionAsMarkdown(newData);
 
       saveStoredData(newData);
       return true;
@@ -253,6 +322,26 @@ export const api = {
       console.warn("Client-side crawl failed:", e);
       return false;
     }
+  },
+
+  getFormattedCollection: async (): Promise<{ json: FormattedCollection | null; markdown: string }> => {
+    const localData = getStoredData();
+    if (!localData || !localData.stats) {
+      return { json: null, markdown: '' };
+    }
+
+    const json: FormattedCollection = {
+      generated_at: new Date().toISOString(),
+      source: TARGET_URL,
+      article_count: localData.articles.length,
+      keywords: localData.stats.top_keywords,
+      articles: localData.articles
+    };
+
+    return {
+      json,
+      markdown: localData.markdown_digest || formatCollectionAsMarkdown(localData)
+    };
   },
 
   getConfigStatus: async (): Promise<ConfigStatus> => {
