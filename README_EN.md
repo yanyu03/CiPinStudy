@@ -111,6 +111,14 @@ Run offline with zero data leakage.
 
 ---
 
+## 🧯 Crawl Troubleshooting (CORS / Proxy)
+
+- v1.1 includes proxy fallback (AllOrigins Raw / AllOrigins Get / CodeTabs).
+- If crawling still fails, public proxies are likely rate-limited or temporarily unavailable; retry later.
+- For best results, run refresh from a stable network environment.
+
+---
+
 ## ⚠️ Disclaimer
 
 This project is for **educational and research purposes only**. The "decoding" provided by the AI is based on prompt engineering logic designed to interpret political rhetoric critically. It does not constitute financial or legal advice.

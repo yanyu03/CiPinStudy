@@ -5,8 +5,27 @@ const LS_DATA_KEY = 'xinhua_insight_local_data';
 
 // Xinhua Net Mobile (UTF-8 encoded)
 const TARGET_URL = 'https://m.news.cn/';
-// CORS Proxy to bypass browser restrictions
-const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+// CORS proxy fallback pool (public services are unstable, so we try multiple providers)
+const CRAWL_PROXIES = [
+  {
+    name: 'allorigins_raw',
+    buildUrl: (target: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}&t=${Date.now()}`,
+    parseText: async (res: Response) => res.text()
+  },
+  {
+    name: 'allorigins_get',
+    buildUrl: (target: string) => `https://api.allorigins.win/get?url=${encodeURIComponent(target)}&t=${Date.now()}`,
+    parseText: async (res: Response) => {
+      const data = await res.json();
+      return data?.contents || '';
+    }
+  },
+  {
+    name: 'codetabs',
+    buildUrl: (target: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`,
+    parseText: async (res: Response) => res.text()
+  }
+];
 
 // --- Local Configuration Management ---
 
@@ -231,6 +250,47 @@ const cleanJson = (text: string): string => {
   return cleaned;
 };
 
+const fetchWithTimeout = async (url: string, timeoutMs = 12000): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const fetchTargetHtmlWithProxyFallback = async (targetUrl: string): Promise<{ html: string; proxyUsed: string }> => {
+  const errors: string[] = [];
+
+  for (const proxy of CRAWL_PROXIES) {
+    try {
+      const response = await fetchWithTimeout(proxy.buildUrl(targetUrl));
+      if (!response.ok) {
+        errors.push(`${proxy.name}: HTTP ${response.status}`);
+        continue;
+      }
+
+      const html = (await proxy.parseText(response)).trim();
+      if (!html || html.length < 200) {
+        errors.push(`${proxy.name}: empty/short body`);
+        continue;
+      }
+
+      if (!html.includes('<html') && !html.includes('<!doctype html')) {
+        errors.push(`${proxy.name}: non-html payload`);
+        continue;
+      }
+
+      return { html, proxyUsed: proxy.name };
+    } catch (e: any) {
+      errors.push(`${proxy.name}: ${e?.message || 'request failed'}`);
+    }
+  }
+
+  throw new Error(`All proxies failed. ${errors.join(' | ')}`);
+};
+
 // --- API Implementation ---
 
 export const api = {
@@ -248,12 +308,8 @@ export const api = {
     try {
       console.log(`Starting client-side crawl of ${TARGET_URL}...`);
       
-      const response = await fetch(`${CORS_PROXY}${encodeURIComponent(TARGET_URL)}&t=${new Date().getTime()}`);
-      if (!response.ok) throw new Error("Proxy response failed");
-
-      const buffer = await response.arrayBuffer();
-      const decoder = new TextDecoder('utf-8'); 
-      const htmlText = decoder.decode(buffer);
+      const { html: htmlText, proxyUsed } = await fetchTargetHtmlWithProxyFallback(TARGET_URL);
+      console.log(`Crawl proxy success: ${proxyUsed}`);
       const parser = new DOMParser();
       const doc = parser.parseFromString(htmlText, 'text/html');
 
@@ -310,7 +366,7 @@ export const api = {
           },
           articles: uniqueArticles.slice(0, 50),
           cleaned_at: new Date().toISOString(),
-          collection_notes: 'Normalized title/url/date and filtered by optional hour window.'
+          collection_notes: `Normalized title/url/date + limit_hours filter. Proxy fallback: ${CRAWL_PROXIES.map(p => p.name).join(', ')}`
       };
 
       newData.markdown_digest = formatCollectionAsMarkdown(newData);
