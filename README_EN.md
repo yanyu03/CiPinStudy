@@ -1,15 +1,23 @@
-# 📰 Xinhua Insight (新华洞察) v1.0
+# 📰 Xinhua Insight (新华洞察) v1.1
 
 > **Decoding the "Baguwen" (Bureaucratic Formalism) | 读懂字里行间的焦虑**
 
 [![Chinese](https://img.shields.io/badge/docs-中文版-red.svg)](README.md)
-![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)
 ![Tech](https://img.shields.io/badge/stack-React_19_·_Vite_·_Tailwind-38bdf8)
 ![Privacy](https://img.shields.io/badge/privacy-Local_Storage_Only-green)
 
 **Xinhua Insight** is a client-side news intelligence dashboard designed to strip away the "positive energy" adjectives from official reports and reveal the underlying logic of policy, economy, and social control.
 
 It combines real-time data crawling with Large Language Models (LLM) to act as your **"Deep Logic Decoder"**.
+
+---
+
+## 🆕 v1.1 Release
+
+- Enhanced crawl/clean pipeline (title/URL/date normalization + time-window filtering).
+- Added structured collection outputs (JSON + Markdown digest).
+- See release notes: `docs/RELEASE_v1.1.0.md`.
 
 ---
 
@@ -100,6 +108,14 @@ Run offline with zero data leakage.
 2. **Provider**: Select `Local Ollama`.
 3. **Base URL**: Default is `http://localhost:11434`.
 4. **Model ID**: Enter your local model (e.g., `llama3`).
+
+---
+
+## 🧯 Crawl Troubleshooting (CORS / Proxy)
+
+- v1.1 includes proxy fallback (AllOrigins Raw / AllOrigins Get / CodeTabs).
+- If crawling still fails, public proxies are likely rate-limited or temporarily unavailable; retry later.
+- For best results, run refresh from a stable network environment.
 
 ---
 

@@ -1,15 +1,23 @@
-# 📰 新华洞察 (Xinhua Insight) v1.0
+# 📰 新华洞察 (Xinhua Insight) v1.1
 
 > **读懂字里行间的焦虑 | Decoding Bureaucratic Formalism**
 
 [![English](https://img.shields.io/badge/docs-English-lightgrey.svg)](README_EN.md)
-![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)
 ![Tech](https://img.shields.io/badge/stack-React_19_·_Vite_·_Tailwind-38bdf8)
 ![Privacy](https://img.shields.io/badge/privacy-Local_Storage_Only-green)
 
 **新华洞察 (Xinhua Insight)** 是一个**纯前端**的新闻情报仪表盘。它旨在剥离官方通稿中“正能量”的形容词，通过词频统计和 AI 深度推理，还原政策、经济与社会管控背后的底层逻辑。
 
 这是一个**去中心化**的分析工具，没有后端服务器，数据掌握在你手中。
+
+---
+
+## 🆕 v1.1 发布
+
+- 抓取与清洗链路增强（标题/URL/日期标准化、时间窗过滤）。
+- 新增结构化收录输出（JSON + Markdown digest）。
+- 详见发布说明：`docs/RELEASE_v1.1.0.md`。
 
 ---
 
@@ -111,6 +119,14 @@ npm run dev
 3. **Base URL**: 默认为 `http://localhost:11434`。
 4. **Model ID**: 输入本地模型名 (如 `llama3`, `qwen:7b`)。
 5. **注意**: 此时你拥有完全的数据主权。
+
+---
+
+## 🧯 抓取故障排查（CORS / 代理）
+
+- v1.1 已内置多代理回退（AllOrigins Raw / AllOrigins Get / CodeTabs）。
+- 若仍抓取失败，多数是公共代理临时不可用或被限流，可稍后重试。
+- 建议优先在网络稳定环境下点击“刷新数据”。
 
 ---
 

@@ -21,6 +21,17 @@ export interface Article {
 export interface DashboardData {
   stats: BasicData | null;
   articles: Article[];
+  cleaned_at?: string;
+  collection_notes?: string;
+  markdown_digest?: string;
+}
+
+export interface FormattedCollection {
+  generated_at: string;
+  source: string;
+  article_count: number;
+  keywords: WordStat[];
+  articles: Article[];
 }
 
 export interface AIAnalysisTopic {

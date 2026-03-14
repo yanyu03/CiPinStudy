@@ -1,12 +1,31 @@
-import { DashboardData, AIReport, ConfigStatus, APIConfig, ModelValidationResponse, PersonaId, BasicData, Article, WordStat } from '../types';
+import { DashboardData, AIReport, ConfigStatus, APIConfig, ModelValidationResponse, PersonaId, Article, WordStat, FormattedCollection } from '../types';
 
 const LS_CONFIG_KEY = 'xinhua_insight_api_config';
 const LS_DATA_KEY = 'xinhua_insight_local_data';
 
 // Xinhua Net Mobile (UTF-8 encoded)
 const TARGET_URL = 'https://m.news.cn/';
-// CORS Proxy to bypass browser restrictions
-const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+// CORS proxy fallback pool (public services are unstable, so we try multiple providers)
+const CRAWL_PROXIES = [
+  {
+    name: 'allorigins_raw',
+    buildUrl: (target: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}&t=${Date.now()}`,
+    parseText: async (res: Response) => res.text()
+  },
+  {
+    name: 'allorigins_get',
+    buildUrl: (target: string) => `https://api.allorigins.win/get?url=${encodeURIComponent(target)}&t=${Date.now()}`,
+    parseText: async (res: Response) => {
+      const data = await res.json();
+      return data?.contents || '';
+    }
+  },
+  {
+    name: 'codetabs',
+    buildUrl: (target: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`,
+    parseText: async (res: Response) => res.text()
+  }
+];
 
 // --- Local Configuration Management ---
 
@@ -33,6 +52,78 @@ const saveStoredData = (data: DashboardData) => {
 // --- Helper for Dates ---
 const getTodayDate = () => {
   return new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+};
+
+const normalizeWhitespace = (value: string): string => {
+  return value.replace(/\s+/g, ' ').trim();
+};
+
+const normalizeTitle = (title: string): string => {
+  return normalizeWhitespace(
+    title
+      .replace(/^【[^】]+】/g, '')
+      .replace(/^\[[^\]]+\]/g, '')
+      .replace(/^\([^\)]+\)/g, '')
+  );
+};
+
+const canonicalizeUrl = (href: string): string => {
+  const url = new URL(href, TARGET_URL);
+  url.hash = '';
+  ['utm_source', 'utm_medium', 'utm_campaign', 'from'].forEach((key) => {
+    url.searchParams.delete(key);
+  });
+  return url.toString();
+};
+
+const extractDateFromUrl = (url: string): string | null => {
+  const candidates = [
+    /\/(\d{4})(\d{2})(\d{2})\//,
+    /\/(\d{4})\/(\d{2})(\d{2})\//,
+    /\/(\d{4})-(\d{2})\/(\d{2})\//
+  ];
+
+  for (const pattern of candidates) {
+    const dateMatch = url.match(pattern);
+    if (dateMatch) {
+      return `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+    }
+  }
+  return null;
+};
+
+const isWithinHours = (date: string, limitHours?: number): boolean => {
+  if (!limitHours) return true;
+  const dateTime = new Date(`${date}T00:00:00+08:00`).getTime();
+  const now = Date.now();
+  const diffHours = (now - dateTime) / (1000 * 60 * 60);
+  return diffHours <= limitHours;
+};
+
+const formatCollectionAsMarkdown = (data: DashboardData): string => {
+  const lines: string[] = [];
+  lines.push(`# Xinhua Insight Collection (${data.stats?.date ?? getTodayDate()})`);
+  lines.push('');
+  lines.push(`- Total Articles: ${data.stats?.total_articles ?? data.articles.length}`);
+  lines.push(`- Last Updated: ${data.stats?.last_updated ?? new Date().toLocaleTimeString()}`);
+  lines.push(`- Cleaned At: ${data.cleaned_at ?? new Date().toISOString()}`);
+  lines.push('');
+  lines.push('## Top Keywords');
+  lines.push('');
+
+  (data.stats?.top_keywords ?? []).forEach((kw) => {
+    lines.push(`- ${kw.word}: ${kw.count}`);
+  });
+
+  lines.push('');
+  lines.push('## Articles');
+  lines.push('');
+
+  data.articles.forEach((article, index) => {
+    lines.push(`${index + 1}. [${article.title}](${article.url}) (${article.date})`);
+  });
+
+  return lines.join('\n');
 };
 
 // --- Client-Side Analysis Helpers ---
@@ -159,6 +250,47 @@ const cleanJson = (text: string): string => {
   return cleaned;
 };
 
+const fetchWithTimeout = async (url: string, timeoutMs = 12000): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const fetchTargetHtmlWithProxyFallback = async (targetUrl: string): Promise<{ html: string; proxyUsed: string }> => {
+  const errors: string[] = [];
+
+  for (const proxy of CRAWL_PROXIES) {
+    try {
+      const response = await fetchWithTimeout(proxy.buildUrl(targetUrl));
+      if (!response.ok) {
+        errors.push(`${proxy.name}: HTTP ${response.status}`);
+        continue;
+      }
+
+      const html = (await proxy.parseText(response)).trim();
+      if (!html || html.length < 200) {
+        errors.push(`${proxy.name}: empty/short body`);
+        continue;
+      }
+
+      if (!html.includes('<html') && !html.includes('<!doctype html')) {
+        errors.push(`${proxy.name}: non-html payload`);
+        continue;
+      }
+
+      return { html, proxyUsed: proxy.name };
+    } catch (e: any) {
+      errors.push(`${proxy.name}: ${e?.message || 'request failed'}`);
+    }
+  }
+
+  throw new Error(`All proxies failed. ${errors.join(' | ')}`);
+};
+
 // --- API Implementation ---
 
 export const api = {
@@ -176,12 +308,8 @@ export const api = {
     try {
       console.log(`Starting client-side crawl of ${TARGET_URL}...`);
       
-      const response = await fetch(`${CORS_PROXY}${encodeURIComponent(TARGET_URL)}&t=${new Date().getTime()}`);
-      if (!response.ok) throw new Error("Proxy response failed");
-
-      const buffer = await response.arrayBuffer();
-      const decoder = new TextDecoder('utf-8'); 
-      const htmlText = decoder.decode(buffer);
+      const { html: htmlText, proxyUsed } = await fetchTargetHtmlWithProxyFallback(TARGET_URL);
+      console.log(`Crawl proxy success: ${proxyUsed}`);
       const parser = new DOMParser();
       const doc = parser.parseFromString(htmlText, 'text/html');
 
@@ -192,29 +320,22 @@ export const api = {
       const today = getTodayDate();
 
       linkElements.forEach((el) => {
-         const title = el.textContent?.trim();
+         const title = normalizeTitle(el.textContent || '');
          const href = el.getAttribute('href');
          
          if (title && title.length > 6 && href && !href.includes('javascript:')) {
              let fullUrl = href;
-             if (!href.startsWith('http')) {
-                 try {
-                     fullUrl = new URL(href, TARGET_URL).href;
-                 } catch (e) {
-                     return;
-                 }
+             try {
+               fullUrl = canonicalizeUrl(href);
+             } catch (e) {
+               return;
              }
 
              // Attempt to extract date from URL 
-             let date = today; // Default to today if finding date fails
-             
-             let dateMatch = fullUrl.match(/\/(\d{4})(\d{2})(\d{2})\//);
-             if (!dateMatch) {
-                dateMatch = fullUrl.match(/\/(\d{4})\/(\d{2})(\d{2})\//);
-             }
+             const date = extractDateFromUrl(fullUrl) ?? today;
 
-             if (dateMatch) {
-                 date = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+             if (!isWithinHours(date, params?.limit_hours)) {
+              return;
              }
 
              extractedArticles.push({
@@ -225,7 +346,7 @@ export const api = {
          }
       });
 
-      const uniqueArticles = Array.from(new Map(extractedArticles.map(item => [item.title, item])).values());
+      const uniqueArticles = Array.from(new Map(extractedArticles.map(item => [`${item.title}-${item.url}`, item])).values());
       
       if (uniqueArticles.length === 0) {
           throw new Error("No articles found in parsed HTML");
@@ -243,8 +364,12 @@ export const api = {
               last_updated: new Date().toLocaleTimeString(),
               top_keywords: topKeywords
           },
-          articles: uniqueArticles.slice(0, 50) 
+          articles: uniqueArticles.slice(0, 50),
+          cleaned_at: new Date().toISOString(),
+          collection_notes: `Normalized title/url/date + limit_hours filter. Proxy fallback: ${CRAWL_PROXIES.map(p => p.name).join(', ')}`
       };
+
+      newData.markdown_digest = formatCollectionAsMarkdown(newData);
 
       saveStoredData(newData);
       return true;
@@ -253,6 +378,26 @@ export const api = {
       console.warn("Client-side crawl failed:", e);
       return false;
     }
+  },
+
+  getFormattedCollection: async (): Promise<{ json: FormattedCollection | null; markdown: string }> => {
+    const localData = getStoredData();
+    if (!localData || !localData.stats) {
+      return { json: null, markdown: '' };
+    }
+
+    const json: FormattedCollection = {
+      generated_at: new Date().toISOString(),
+      source: TARGET_URL,
+      article_count: localData.articles.length,
+      keywords: localData.stats.top_keywords,
+      articles: localData.articles
+    };
+
+    return {
+      json,
+      markdown: localData.markdown_digest || formatCollectionAsMarkdown(localData)
+    };
   },
 
   getConfigStatus: async (): Promise<ConfigStatus> => {
